@@ -17,7 +17,7 @@ import java.sql.Date;
 import java.util.*;
 import java.util.stream.Collectors;
 
-public class Manager {
+public class Manager implements IManager{
     private static final Path dataFolder = Path.of("src\\main\\resources\\META-INF");
     private static Connection connection;
 
@@ -25,7 +25,7 @@ public class Manager {
         try {
             Properties properties = new Properties();
             properties.load(Files.newBufferedReader(dataFolder.resolve("app.config")));
-            String connectionString = "jdbc:postgresql://" + properties.get("ip") +
+            String connectionString = "jdbc:postgresql://" + properties.get("local") +
                     "/" + properties.get("db") + "?user=" + properties.get("user") + "&password=" + properties.get("password");
             connection = DriverManager.getConnection(connectionString);
         } catch (SQLException | IOException throwable) {
@@ -33,21 +33,21 @@ public class Manager {
         }
     }
 
-    public static <T> T find(int id, Class<T> reference) throws Exception, NoMappableFieldsFound {
+    @Override
+    public <T> T find(int id, Class<T> reference) throws Exception, NoMappableFieldsFound {
         isMappable(reference);
         String table = reference.getAnnotation(Entity.class).name();
         Statement statement = connection.createStatement();
         String columnName = getIdColumnName(reference);
         ResultSet result = statement.executeQuery("SELECT * FROM " + table + " WHERE " + columnName + " = " + id);
         if (result.next()) {
-            connection.close();
             return mapObject(result, reference);
         }
-        connection.close();
         return null;
     }
 
-    public static <T> T remove(T object) throws Exception, NoMappableFieldsFound {
+    @Override
+    public <T> T remove(T object) throws Exception, NoMappableFieldsFound {
         isMappable(object.getClass());
         String table = object.getClass().getAnnotation(Entity.class).name();
         Statement statement = connection.createStatement();
@@ -57,8 +57,9 @@ public class Manager {
         if (idField != null) {
             idField.setAccessible(true);
             Integer id = (Integer) idField.get(object);
-            T find = (T) find(id, object.getClass());
-            if (find != null && find.equals(object)) {
+            T find = id != null ? (T) find(id, object.getClass()) : null;
+            Integer findId = (Integer) idField.get(find);
+            if (find != null && id - findId == 0) {
                 statement.executeUpdate("DELETE FROM " + table + " WHERE " + columnName + " = " + id);
                 return object;
             }
@@ -67,7 +68,8 @@ public class Manager {
         return null;
     }
 
-    public static <T> List<T> getObjects(int limit, Class<T> reference) throws Exception, NoMappableFieldsFound {
+    @Override
+    public <T> List<T> getObjects(int limit, Class<T> reference) throws Exception, NoMappableFieldsFound {
         isMappable(reference);
         String table = reference.getAnnotation(Entity.class).name();
         Statement statement = connection.createStatement();
@@ -76,13 +78,14 @@ public class Manager {
         while (result.next()) {
             objects.add(mapObject(result, reference));
         }
-        connection.close();
         return objects;
     }
 
-    public static <T> void merge(T object) throws Exception, NoMappableFieldsFound {
-        isMappable(object.getClass());//TODO: Create table if it is not exists!
+    @Override
+    public <T> void merge(T object) throws Exception, NoMappableFieldsFound {
+        isMappable(object.getClass());
         MappableFields fields = getMappableFields(object.getClass().getDeclaredFields());
+        createTable(object.getClass(), fields);
         Field idField = fields.id;
         if (idField != null) {
             idField.setAccessible(true);
@@ -93,6 +96,34 @@ public class Manager {
                 insert(object, fields);
             }
         }
+    }
+
+    private static <T> void createTable(Class<T> reference, MappableFields fields) throws SQLException {
+        Statement statement = connection.createStatement();
+        statement.execute("CREATE TABLE IF NOT EXISTS " + reference.getAnnotation(Entity.class).name() + "(" + prepareTableColumns(fields) + ")");
+        statement.close();
+    }
+
+    private static String prepareTableColumns(MappableFields fields) {
+        StringBuilder column = new StringBuilder(fields.id != null ? fields.idColumn + " serial PRIMARY KEY,\n" : "");
+        for (Field field : fields.fieldList) {
+            StringBuilder builder = new StringBuilder();
+            field.setAccessible(true);
+            builder.append(field.getAnnotation(Column.class).name());
+            Class<?> type = field.getType();
+            if (type.equals(Integer.class)) {
+                builder.append(" int4");
+            } else if (type.equals(Double.class)) {
+                builder.append(" double precision");
+            } else if (type.getSimpleName().equals(Date.class.getSimpleName())) {
+                builder.append(" date");
+            } else if (type.equals(String.class)) {
+                builder.append(" varchar");
+            }
+            builder.append(",");
+            column.append(builder);
+        }
+        return column.substring(0, column.length() - 1);
     }
 
     private static <T> void update(T object, MappableFields fields) throws SQLException, IllegalAccessException {
@@ -112,17 +143,13 @@ public class Manager {
         PreparedStatement statement = connection.prepareStatement(builder);
         statement.setInt(1, (Integer) fields.id.get(object));
         preparedStatement(object, statement, fields.fieldList, 2);
-        System.out.println(statement);
-        connection.close();
     }
 
     private static <T> void insert(T object, MappableFields fields) throws SQLException, IllegalAccessException {
         String columns = fields.fieldList.stream().map(field -> field.getAnnotation(Column.class).name()).collect(Collectors.joining(", "));
         String table = object.getClass().getAnnotation(Entity.class).name();
         PreparedStatement statement = connection.prepareStatement("INSERT INTO " + table + "(" + columns + ") VALUES(" + repeat(fields.fieldList.size()) + ")");
-        System.out.println(statement);
         preparedStatement(object, statement, fields.fieldList, 1);
-        connection.close();
     }
 
     private static <T> void preparedStatement(T object, PreparedStatement statement, List<Field> fields, int count) throws SQLException, IllegalAccessException {
@@ -151,13 +178,11 @@ public class Manager {
             } else if (type.equals(String.class)) {
                 value = field.get(object);
                 if (value != null) {
-                    System.out.println(value);
                     statement.setString(count++, (String) value);
                 } else
                     statement.setNull(count++, 12);
             }
         }
-        System.out.println(statement);
         statement.execute();
         statement.close();
     }
