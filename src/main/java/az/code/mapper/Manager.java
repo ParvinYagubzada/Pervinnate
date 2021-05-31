@@ -6,6 +6,7 @@ import az.code.annotations.Id;
 import az.code.exceptions.ClassNotMappable;
 import az.code.exceptions.FieldlessClass;
 import az.code.exceptions.NoMappableFieldsFound;
+import org.postgresql.util.PSQLException;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -17,7 +18,7 @@ import java.sql.Date;
 import java.util.*;
 import java.util.stream.Collectors;
 
-public class Manager implements IManager{
+public class Manager implements IManager {
     private static final Path dataFolder = Path.of("src\\main\\resources\\META-INF");
     private static Connection connection;
 
@@ -58,27 +59,39 @@ public class Manager implements IManager{
             idField.setAccessible(true);
             Integer id = (Integer) idField.get(object);
             T find = id != null ? (T) find(id, object.getClass()) : null;
-            Integer findId = (Integer) idField.get(find);
-            if (find != null && id - findId == 0) {
-                statement.executeUpdate("DELETE FROM " + table + " WHERE " + columnName + " = " + id);
-                return object;
+            if (find == null) {
+                return null;
+            } else {
+                Integer findId = (Integer) idField.get(find);
+                if (id - findId == 0) {
+                    statement.executeUpdate("DELETE FROM " + table + " WHERE " + columnName + " = " + id);
+                    return object;
+                }
             }
-            return null;
+
+
         }
         return null;
     }
 
     @Override
     public <T> List<T> getObjects(int limit, Class<T> reference) throws Exception, NoMappableFieldsFound {
-        isMappable(reference);
-        String table = reference.getAnnotation(Entity.class).name();
-        Statement statement = connection.createStatement();
-        ResultSet result = statement.executeQuery("SELECT * FROM " + table + " LIMIT " + limit);
-        List<T> objects = new LinkedList<>();
-        while (result.next()) {
-            objects.add(mapObject(result, reference));
+        if(limit>0){
+            isMappable(reference);
+            String table = reference.getAnnotation(Entity.class).name();
+            Statement statement = connection.createStatement();
+            ResultSet result = statement.executeQuery("SELECT * FROM " + table + " LIMIT " + limit);
+            List<T> objects = new LinkedList<>();
+            while (result.next()) {
+                objects.add(mapObject(result, reference));
+            }
+            return objects;
+
+        }else {
+            return null;
         }
-        return objects;
+
+
     }
 
     @Override
